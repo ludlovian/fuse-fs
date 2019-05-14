@@ -1,0 +1,46 @@
+{
+  "name": "fuse-fs",
+  "version": "1.1.1",
+  "description": "Mount an `fs` filesystem as a FUSE mount",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "source": "src/index.js",
+  "scripts": {
+    "clean": "rm -rf dist/ node_modules/.cache/ .nyc_output/ coverage/",
+    "format": "prettier-standard {src,test}/*.js",
+    "lint": "standard {src,test}/*.js | snazzy",
+    "test": "nyc ava",
+    "coverage": "npm run test && nyc report --reporter=html && sirv coverage/ -p 8000",
+    "build": "rollup -c rollup.config.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "/nas/config/git/fuse-fs.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "ava": "^1.4.1",
+    "esm": "^3.2.22",
+    "mem-fs": "github:ludlovian/mem-fs",
+    "memfs": "^2.15.2",
+    "nyc": "^14.1.1",
+    "prettier-standard": "^9.1.1",
+    "rollup": "^1.11.3",
+    "rollup-plugin-cleanup": "^3.1.1",
+    "rollup-plugin-terser": "^4.0.4",
+    "sinon": "^7.3.2",
+    "sirv-cli": "^0.4.2",
+    "snazzy": "^8.0.0",
+    "standard": "^12.0.1"
+  },
+  "dependencies": {
+    "fuse-bindings": "^2.11.2",
+    "pswitch": "github:ludlovian/pswitch"
+  },
+  "ava": {
+    "require": [
+      "esm"
+    ]
+  }
+}
