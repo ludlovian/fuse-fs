@@ -1,5 +1,5 @@
 # fuse-fs
-Mount a tweakable fs-like with FUSE
+A tweakable fs-like that can be mounted via FUSE
 
 ## Background
 
@@ -33,75 +33,37 @@ mounts the FuseFS object at the mount point. Returns a promise of the fact that 
 
 unmounts the FuseFS object, returning a promise of the fact.
 
-### .beforeCall
+### .before
 
-`fuseFS.beforeCall(methodName, interceptFunction)`
+`fuseFS.before(method[, method...], function[, function...])`
 
-adds an intercept for a FUSE method before the underlying fs method is called.
-The intercept function is call with a context object with the following
-keys:
-- name - the FUSE method being called
-- args - the args it was called with (as adjusted by any earlier intercept)
-- origArgs - the original args it was called with, before any intercepts
+adds _before_ intercepts for the specified methods. Returns a function to remove them.
 
-The function must return a promise (e.g. an async function)
+### .after
 
-| returned `Promise` | behaviour |
-| --- | --- |
-| `Array` of values | The fs method will be skipped, and the returned array used as the parameters for the FUSE callback. No further intercepts will be called |
-| rejected with `Error` | The FUSE method will be reported as having failed. A string `.code` will be decoded into the right FUSE error number |
-| anything else | The FUSE call continues, using the `args` (which you may have adjusted) and calling the underlying fs method |
+`fuseFS.after(method[, method...], function[, function...])`
 
-The `beforeCall` method returns a function which can be called to remove the intercept
+adds _after_ intercepts for the specified methods. Returns a function to remove them.
 
-Intercepts are called in the order they are defined
+### Intercepts
 
-### .afterCall
+Intercept functions are called in the order they are specified. The _before_ ones are called before the call (duh!),
+and the _after_ ones after the call.
 
-`fuseFS.afterCall(methodName, interceptFunction)`
+They all take one parameter, and are `await`ed, so can be `async`. The parameter is a context object with the following:  
+- `name` - the FUSE name of the method being called
+- `origArgs[]` - the original args called (before any intercepts)
+- `args[]` - the args that will be used to make the call. Can be modified by _before_ intercepts.
+- `origResults[]` - the original results from the call (before any _after_ intercepts)
+- `results[]` - the results of the call to be sent back to the called. Can be modified by _after_ intercepts
 
-adds an intercept for a FUSE method after the underlying fs method has been made.
-Receives a context object with the following keys:
-- name - the FUSE method called
-- args - the args actually sent to the fs method
-- origArgs - the original args (before any `beforeCall` intercepts applied)
-- results - the array of results (usually [error, result]). Possibly as modified by any earlier intercepts
-- origResults - the array of results from theunderlying fs method before any other `afterCall` intercepts
+`results` and `origResults` will be `undefined` for any _before_ intercepts. If however, an intercept sets `results` then no
+call will be made to the fs-like, and instead it will be passed on to the chain of _after_ intercepts.
 
-You can adjust the `results` array here. The FUSE callback will be called on resolution/rejection of this promise.
+Return values of intercept functions are ignored. Any changes must be made to the context object.
 
-If the intercept throws, then the error will be decoded and used as the FUSE callback result. No
-other intercepts will be called.
+### .invoke
 
-The `afterCall` returns a function will can remove this intercept.
+`const [err, results] = await fuseFS.invoke(method, ...args)`
 
-Intercepts are called in the order they are defined.
-
-### .pathAdjust
-
-`fuseFS.pathAdjust(pathAdjustor)`
-
-A modified intercept which allows you to adjust paths (e.g. to implement a union or redirection scheme).
-
-The `pathAdjustor` function should return a `Promise` of a revised path to use, and recevies the following params:
-- path - the path given to the FUSE function
-- name - the name of the method being called (e.g. `getattr` or `readdir`)
-- num - the 0-based index of the parameter (so you know if this is the from- or to- path of a `rename` for example)
-
-If the promise rejects, then the appropriate error will be sent on to FUSE.
-
-`pathAdjust` returns a function to remove the pathAdjustor
-
-### .on
-
-`off = fuseFs.on(methodName, callback)`
-
-adds a notify callback to be called after each FUSE call. The callback is called with a single object with the
-following keys:
-- name - the FUSE method name
-- args - the args, as modified by all intercepts
-- result - the result array as modified by all intercepts
-
-Do not linger in this callback.
-
-It returns an unsubscription function
+Invokes a FUSE callback - with the chains of intercepts - and resolves to the array of values that would be sent back to FUSE 
