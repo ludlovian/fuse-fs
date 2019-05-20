@@ -1,39 +1,9 @@
 'use strict'
 
 import test from 'ava'
-import Operations from '../src/operations'
-
-function noop () {}
-const noopFs = {
-  stat: noop,
-  readdir: noop,
-  open: noop,
-  read: noop,
-  close: noop
-}
-
-function cbToPromise (fn) {
-  return (...args) =>
-    new Promise(resolve => {
-      fn(...args, (...results) => resolve(results))
-    })
-}
+import FuseFS from '../src'
 
 const path = '/path'
-
-test('basic conversion of fs-like', t => {
-  const fs = { ...noopFs }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  t.is(typeof fns.getattr, 'function')
-  t.is(typeof fns.readdir, 'function')
-  t.is(typeof fns.open, 'function')
-  t.is(typeof fns.create, 'function')
-  t.is(typeof fns.read, 'function')
-  t.is(typeof fns.release, 'function')
-
-  t.is(typeof fns.write, 'undefined')
-})
 
 test('error conversion', async t => {
   let _err
@@ -47,15 +17,13 @@ test('error conversion', async t => {
       Promise.resolve().then(() => _cb(_err))
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const getattr = cbToPromise(fns.getattr)
+  const ffs = new FuseFS(fs)
 
   // -ve number
   _err = -23
   count = 0
   _path = undefined
-  results = await getattr(path)
+  results = await ffs.invoke('getattr', path)
   t.is(_path, path)
   t.is(count, 1)
   t.deepEqual(results, [_err])
@@ -64,7 +32,7 @@ test('error conversion', async t => {
   _err = 'ENOTDIR'
   count = 0
   _path = undefined
-  results = await getattr(path)
+  results = await ffs.invoke('getattr', path)
   t.is(_path, path)
   t.is(count, 1)
   t.deepEqual(results, [-20])
@@ -73,7 +41,7 @@ test('error conversion', async t => {
   _err = true
   count = 0
   _path = undefined
-  results = await getattr(path)
+  results = await ffs.invoke('getattr', path)
   t.is(_path, path)
   t.is(count, 1)
   t.deepEqual(results, [-1])
@@ -82,7 +50,7 @@ test('error conversion', async t => {
   _err = { code: 'ENOSYS' }
   count = 0
   _path = undefined
-  results = await getattr(path)
+  results = await ffs.invoke('getattr', path)
   t.is(_path, path)
   t.is(count, 1)
   t.deepEqual(results, [-38])
@@ -91,7 +59,7 @@ test('error conversion', async t => {
   _err = { errno: -123 }
   count = 0
   _path = undefined
-  results = await getattr(path)
+  results = await ffs.invoke('getattr', path)
   t.is(_path, path)
   t.is(count, 1)
   t.deepEqual(results, [-123])
@@ -100,7 +68,7 @@ test('error conversion', async t => {
   _err = { foo: 'bar' }
   count = 0
   _path = undefined
-  results = await getattr(path)
+  results = await ffs.invoke('getattr', path)
   t.is(_path, path)
   t.is(count, 1)
   t.deepEqual(results, [-1])
@@ -115,11 +83,9 @@ test('utimens', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const utimens = cbToPromise(fns.utimens)
+  const ffs = new FuseFS(fs)
 
-  await utimens(path, 123400000000, 789000000000)
+  await ffs.invoke('utimens', path, 123400000000, 789000000000)
   t.deepEqual(_args, [path, 123.4, 789])
 })
 
@@ -132,11 +98,9 @@ test('release', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const release = cbToPromise(fns.release)
+  const ffs = new FuseFS(fs)
 
-  await release(path, 456)
+  await ffs.invoke('release', path, 456)
   t.deepEqual(_args, [456])
 })
 
@@ -149,11 +113,9 @@ test('fsync', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const fsync = cbToPromise(fns.fsync)
+  const ffs = new FuseFS(fs)
 
-  await fsync(path, 17, true)
+  await ffs.invoke('fsync', path, 17, true)
   t.deepEqual(_args, [17])
 })
 
@@ -166,23 +128,21 @@ test('open', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const open = cbToPromise(fns.open)
+  const ffs = new FuseFS(fs)
 
-  await open(path, 0)
+  await ffs.invoke('open', path, 0)
   t.deepEqual(_args, [path, 'r'])
-  _args = null
 
-  await open(path, 2)
+  _args = null
+  await ffs.invoke('open', path, 2)
   t.deepEqual(_args, [path, 'r+'])
-  _args = null
 
-  await open(path, 64 | 1024 | 2)
+  _args = null
+  await ffs.invoke('open', path, 64 | 1024 | 2)
   t.deepEqual(_args, [path, 'a+'])
-  _args = null
 
-  await open(path, 64 | 128 | 1)
+  _args = null
+  await ffs.invoke('open', path, 64 | 128 | 1)
   t.deepEqual(_args, [path, 'wx'])
 })
 
@@ -195,11 +155,9 @@ test('create', async t => {
       Promise.resolve().then(() => _cb(0, 17))
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const create = cbToPromise(fns.create)
+  const ffs = new FuseFS(fs)
 
-  const results = await create(path, 0o755)
+  const results = await ffs.invoke('create', path, 0o755)
   t.deepEqual(_args, [path, 'w', 0o755])
   t.deepEqual(results, [0, 17])
 })
@@ -214,17 +172,14 @@ test('read', async t => {
       Promise.resolve().then(() => _cb(..._ret))
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const read = cbToPromise(fns.read)
-
+  const ffs = new FuseFS(fs)
   _ret = [0, 17]
-  let results = await read(path, 11, 22, 33, 44)
+  let results = await ffs.invoke('read', path, 11, 22, 33, 44)
   t.deepEqual(_args, [11, 22, 0, 33, 44])
   t.deepEqual(results, [17])
 
   _ret = [-234]
-  results = await read(path, 11, 22, 33, 44)
+  results = await ffs.invoke('read', path, 11, 22, 33, 44)
   t.deepEqual(results, [-234])
 })
 
@@ -238,21 +193,18 @@ test('write', async t => {
       Promise.resolve().then(() => _cb(..._ret))
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const write = cbToPromise(fns.write)
-
+  const ffs = new FuseFS(fs)
   _ret = [0, 17]
-  let results = await write(path, 11, 22, 33, 44)
+  let results = await ffs.invoke('write', path, 11, 22, 33, 44)
   t.deepEqual(_args, [11, 22, 0, 33, 44])
   t.deepEqual(results, [17])
 
   _ret = [-234]
-  results = await write(path, 11, 22, 33, 44)
+  results = await ffs.invoke('write', path, 11, 22, 33, 44)
   t.deepEqual(results, [-234])
 })
 
-test('pre-call intercept', async t => {
+test('before intercept', async t => {
   let _args
 
   const fs = {
@@ -262,23 +214,21 @@ test('pre-call intercept', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const getattr = cbToPromise(fns.getattr)
-
-  const undo = ops.beforeCall('getattr', async ctx => {
-    return [1, 2, 3]
+  const ffs = new FuseFS(fs)
+  const undo = ffs.before('getattr', ctx => {
+    ctx.results = [1, 2, 3]
   })
 
-  let result = await getattr(path)
+  let result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [1, 2, 3])
 
   undo()
-  result = await getattr(path)
+  undo()
+  result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [undefined])
 })
 
-test('post-call intercept', async t => {
+test('after intercept', async t => {
   let _args
 
   const fs = {
@@ -288,19 +238,17 @@ test('post-call intercept', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const getattr = cbToPromise(fns.getattr)
+  const ffs = new FuseFS(fs)
 
-  const undo = ops.afterCall('getattr', async ctx => {
+  const undo = ffs.after('getattr', async ctx => {
     ctx.results = [3, 4, 5]
   })
 
-  let result = await getattr(path)
+  let result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [3, 4, 5])
 
   undo()
-  result = await getattr(path)
+  result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [undefined])
 })
 
@@ -316,15 +264,12 @@ test('intercept that throws', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
-  const fns = ops.getFuseOps()
-  const getattr = cbToPromise(fns.getattr)
-
-  const undo = ops.afterCall('getattr', async ctx => {
+  const ffs = new FuseFS(fs)
+  const undo = ffs.after('foobar', 'getattr', ctx => {
     throw err
   })
 
-  let result = await getattr(path)
+  let result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [-20])
 
   undo()
@@ -339,12 +284,64 @@ test('bad intercepts', async t => {
       Promise.resolve().then(_cb)
     }
   }
-  const ops = new Operations(fs)
+  const ffs = new FuseFS(fs)
 
-  let undo = ops.beforeCall('foobar', () => {})
+  let undo = ffs.before('foobar', () => {})
   undo()
 
-  undo = ops.beforeCall('getattr', 17)
+  undo = ffs.before('getattr', 17)
   undo()
   t.pass()
+})
+
+test('intercept returning thenable', async t => {
+  let _args
+  const fs = {
+    stat: (...args) => {
+      _args = args
+      const _cb = _args.pop()
+      Promise.resolve().then(_cb)
+    }
+  }
+  const ffs = new FuseFS(fs)
+  ffs.before('getattr', ctx => {
+    const p = Promise.resolve().then(() => {
+      ctx.results = [1, 2, 3]
+    })
+    return { then: p.then.bind(p) }
+  })
+
+  let result = await ffs.invoke('getattr', path)
+  t.deepEqual(result, [1, 2, 3])
+})
+
+test.cb('invoke like FUSE', t => {
+  let _args
+  const fs = {
+    stat: (...args) => {
+      _args = args
+      const _cb = _args.pop()
+      Promise.resolve().then(_cb)
+    }
+  }
+  const ffs = new FuseFS(fs)
+  ffs.fuseOps.getattr(path, err => {
+    t.falsy(err)
+    t.deepEqual(_args, [path])
+    t.end()
+  })
+})
+
+test('invoke with missing method', async t => {
+  let _args
+  const fs = {
+    stat: (...args) => {
+      _args = args
+      const _cb = _args.pop()
+      Promise.resolve().then(_cb)
+    }
+  }
+  const ffs = new FuseFS(fs)
+  const results = await ffs.invoke('foobar', path)
+  t.deepEqual(results, [-1])
 })

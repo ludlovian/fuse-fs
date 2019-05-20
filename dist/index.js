@@ -36,91 +36,47 @@ const renames = {
   release: 'close',
   create: 'open'
 };
-class Operations {
-  constructor (fs) {
-    this.fs = fs;
-    this.ops = new Map();
+const standardBefores = [
+  ['utimens', nanosecondsToSeconds],
+  ['fgetattr', dropPath],
+  ['ftruncate', dropPath],
+  ['release', dropPath],
+  ['fsync', ignoreDatasync],
+  ['open', openFlags],
+  ['create', createFlags],
+  ['read', zeroOffset],
+  ['write', zeroOffset]
+];
+const standardAfters = [['read', bytesReturn], ['write', bytesReturn]];
+class Method {
+  static getMethods (fs) {
+    const methods = new Map();
     for (const name of fuseMethods) {
-      const op = Operation.create(fs, name);
-      if (!op) continue
-      this.ops.set(name, op);
+      const fsName = name in renames ? renames[name] : name;
+      if (typeof fs[fsName] !== 'function') continue
+      const method = new Method();
+      method.name = name;
+      method.fsMethod = (...args) =>
+        new Promise(resolve =>
+          fs[fsName](...args, (...results) => resolve(results))
+        );
+      method.before = [];
+      method.after = [];
+      methods.set(name, method);
     }
-    this.applyStandardIntercepts();
+    for (const [name, fn] of standardBefores) {
+      if (methods.has(name)) methods.get(name).before.push(fn);
+    }
+    for (const [name, fn] of standardAfters) {
+      if (methods.has(name)) methods.get(name).after.push(fn);
+    }
+    return methods
   }
-  beforeCall (name, intercept) {
-    const op = this.ops.get(name);
-    if (!op) return noop
-    return addCallback(op.preIntercepts, intercept)
+  invokeFuse (...args) {
+    const fusecb = args.pop();
+    this.invoke(...args).then(results => fusecb(...results));
   }
-  afterCall (name, intercept) {
-    const op = this.ops.get(name);
-    if (!op) return noop
-    return addCallback(op.postIntercepts, intercept)
-  }
-  getFuseOps () {
-    return Array.from(this.ops.entries()).reduce(
-      (ops, [name, op]) => ({ ...ops, [name]: op.call }),
-      {}
-    )
-  }
-  applyStandardIntercepts () {
-    this.beforeCall('utimens', async ctx => {
-      const [path, atime, mtime] = ctx.args;
-      ctx.args = [path, atime / 1e9, mtime / 1e9];
-    });
-    const dropPath = async ctx => {
-      ctx.args.splice(0, 1);
-    };
-    this.beforeCall('fgetattr', dropPath);
-    this.beforeCall('ftruncate', dropPath);
-    this.beforeCall('release', dropPath);
-    this.beforeCall('fsync', async ctx => {
-      const [path, fd, datasync] = ctx.args;
-      ctx.args = [fd];
-    });
-    this.beforeCall('open', async ctx => {
-      const [path, flags] = ctx.args;
-      ctx.args = [path, decodeFlags(flags)];
-    });
-    this.beforeCall('create', async ctx => {
-      const [path, mode] = ctx.args;
-      ctx.args = [path, 'w', mode];
-    });
-    this.beforeCall('read', async ctx => {
-      const [path, fd, buf, len, pos] = ctx.args;
-      ctx.args = [fd, buf, 0, len, pos];
-    });
-    this.afterCall('read', async ctx => {
-      const [err, bytes] = ctx.origResults;
-      if (!err) ctx.results = [bytes];
-    });
-    this.beforeCall('write', async ctx => {
-      const [path, fd, buf, len, pos] = ctx.args;
-      ctx.args = [fd, buf, 0, len, pos];
-    });
-    this.afterCall('write', async ctx => {
-      const [err, bytes] = ctx.origResults;
-      if (!err) ctx.results = [bytes];
-    });
-  }
-}
-class Operation {
-  static create (fs, name) {
-    const fsName = name in renames ? renames[name] : name;
-    if (typeof fs[fsName] !== 'function') return null
-    const op = new Operation();
-    op.name = name;
-    op.fsMethod = (...args) =>
-      new Promise(resolve =>
-        fs[fsName](...args, (...results) => resolve(results))
-      );
-    op.preIntercepts = [];
-    op.postIntercepts = [];
-    op.call = op.call.bind(op);
-    return op
-  }
-  async call (...args) {
-    const fuseCallback = args.pop();
+  async invoke (...args) {
     const ctx = {
       name: this.name,
       args,
@@ -129,29 +85,57 @@ class Operation {
       origResults: undefined
     };
     try {
-      for (const intercept of this.preIntercepts) {
-        const result = await Promise.resolve(intercept(ctx));
-        if (Array.isArray(result)) return fuseCallback(...result)
+      for (const fn of this.before) {
+        const p = fn(ctx);
+        if (thenable(p)) await p;
+        if (ctx.results) break
       }
-      ctx.origResults = await this.fsMethod(...ctx.args);
-      ctx.results = [...ctx.origResults];
-      if (ctx.results[0]) ctx.results[0] = decodeError(ctx.results[0]);
-      for (const intercept of this.postIntercepts) {
-        await Promise.resolve(intercept(ctx));
+      if (!ctx.results) ctx.results = await this.fsMethod(...ctx.args);
+      ctx.origResults = [...ctx.results];
+      const [err] = ctx.results;
+      if (err) ctx.results[0] = decodeError(err);
+      for (const fn of this.after) {
+        const p = fn(ctx);
+        if (thenable(p)) await p;
       }
-      return fuseCallback(...ctx.results)
+      return ctx.results
     } catch (err) {
-      return fuseCallback(decodeError(err))
+      return [decodeError(err)]
     }
   }
 }
-function noop () {}
-function addCallback (list, cb) {
-  if (typeof cb === 'function') list.push(cb);
-  return () => {
-    const ix = list.indexOf(cb);
-    if (~ix) list.splice(ix, 1);
-  }
+function nanosecondsToSeconds (ctx) {
+  const [path, atime, mtime] = ctx.args;
+  ctx.args = [path, atime / 1e9, mtime / 1e9];
+}
+function dropPath (ctx) {
+  ctx.args.splice(0, 1);
+}
+function ignoreDatasync (ctx) {
+  const [path, fd, datasync] = ctx.args;
+  ctx.args = [fd];
+}
+function openFlags (ctx) {
+  const [path, flags] = ctx.args;
+  ctx.args = [path, decodeFlags(flags)];
+}
+function createFlags (ctx) {
+  const [path, mode] = ctx.args;
+  ctx.args = [path, 'w', mode];
+}
+function zeroOffset (ctx) {
+  const [path, fd, buf, len, pos] = ctx.args;
+  ctx.args = [fd, buf, 0, len, pos];
+}
+function bytesReturn (ctx) {
+  const [err, bytes] = ctx.origResults;
+  if (!err) ctx.results = [bytes];
+}
+function thenable (p) {
+  return (
+    p instanceof Promise ||
+    (p && typeof p === 'object' && typeof p.then === 'function')
+  )
 }
 function decodeError (err) {
   if (typeof err === 'number') return err
@@ -175,33 +159,13 @@ function decodeFlags (flags) {
   )
 }
 
-const singlePathMethods = [
-  'getattr',
-  'readdir',
-  'access',
-  'truncate',
-  'readlink',
-  'chown',
-  'chmod',
-  'unlink',
-  'mkdir',
-  'rmdir',
-  'utimens',
-  'open',
-  'create'
-];
-const dualPathMethods = ['rename', 'link', 'symlink'];
 class FuseFS {
   constructor (fs, options = {}) {
     this.options = options;
     this.mountPoint = undefined;
     this.mounted = new PSwitch(false);
-    this.operations = new Operations(fs);
-  }
-  mount (mountPoint) {
-    this.mountPoint = mountPoint;
-    const ops = {
-      ...this.operations.getFuseOps(),
+    this.operations = Method.getMethods(fs);
+    this.fuseOps = {
       ...this.options,
       init: cb => {
         this.mounted.set(true);
@@ -212,17 +176,19 @@ class FuseFS {
         cb(null);
       }
     };
-    const _debug = process.env.DEBUG;
-    const fuseDebug = /(?:^|,)fuse(?:,|$)/i.test(_debug);
-    if (!fuseDebug) {
-      process.env.DEBUG = '';
+    for (const method of this.operations.values()) {
+      this.fuseOps[method.name] = method.invokeFuse.bind(method);
     }
+  }
+  mount (mountPoint) {
+    this.mountPoint = mountPoint;
+    const _debug = process.env.DEBUG;
+    const fuseDebug = /\bfuse\b/i.test(_debug);
+    if (!fuseDebug) process.env.DEBUG = '';
     return new Promise((resolve, reject) => {
-      fuse.mount(mountPoint, ops, err => {
+      fuse.mount(mountPoint, this.fuseOps, err => {
         if (err) return reject(err)
-        if (!fuseDebug) {
-          process.env.DEBUG = _debug;
-        }
+        if (!fuseDebug) process.env.DEBUG = _debug;
         resolve(this.mounted.when(true));
       });
     })
@@ -235,34 +201,35 @@ class FuseFS {
       });
     })
   }
-  beforeCall (name, intercept) {
-    return this.operations.beforeCall(name, intercept)
+  before (...args) {
+    return addIntercepts(this.operations, 'before', args)
   }
-  afterCall (name, intercept) {
-    return this.operations.afterCall(name, intercept)
+  after (...args) {
+    return addIntercepts(this.operations, 'after', args)
   }
-  pathAdjust (adjustor) {
-    const undo = [];
-    for (const name of singlePathMethods) {
-      undo.push(this.beforeCall(name, adjustSinglePath));
-    }
-    for (const name of dualPathMethods) {
-      undo.push(this.beforeCall(name, adjustDualPath));
-    }
-    return () => undo.forEach(fn => fn())
-    function adjustSinglePath (ctx) {
-      ctx.args[0] = adjustor(ctx.args[0], ctx.name, 0);
-    }
-    function adjustDualPath (ctx) {
-      ctx.args[0] = adjustor(ctx.args[0], ctx.name, 0);
-      ctx.args[1] = adjustor(ctx.args[1], ctx.name, 1);
+  async invoke (name, ...args) {
+    const method = this.operations.get(name);
+    if (!method) return [-1]
+    return method.invoke(...args)
+  }
+}
+function addIntercepts (ops, type, args) {
+  const methods = args.filter(x => typeof x === 'string');
+  const fns = args.filter(x => typeof x === 'function');
+  const undos = [];
+  for (const method of methods) {
+    for (const fn of fns) {
+      if (ops.has(method)) {
+        const list = ops.get(method)[type];
+        list.push(fn);
+        undos.push(() => {
+          const ix = list.indexOf(fn);
+          if (~ix) list.splice(ix, 1);
+        });
+      }
     }
   }
-  on (name, callback) {
-    return this.afterCall(name, async ctx => {
-      callback(ctx);
-    })
-  }
+  return () => undos.forEach(fn => fn())
 }
 
 module.exports = FuseFS;
