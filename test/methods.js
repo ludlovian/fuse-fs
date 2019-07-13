@@ -254,7 +254,7 @@ test('after intercept', async t => {
 
 test('intercept that throws', async t => {
   let _args
-  let err = new Error('oops')
+  const err = new Error('oops')
   err.code = 'ENOTDIR'
 
   const fs = {
@@ -269,7 +269,7 @@ test('intercept that throws', async t => {
     throw err
   })
 
-  let result = await ffs.invoke('getattr', path)
+  const result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [-20])
 
   undo()
@@ -311,7 +311,7 @@ test('intercept returning thenable', async t => {
     return { then: p.then.bind(p) }
   })
 
-  let result = await ffs.invoke('getattr', path)
+  const result = await ffs.invoke('getattr', path)
   t.deepEqual(result, [1, 2, 3])
 })
 
